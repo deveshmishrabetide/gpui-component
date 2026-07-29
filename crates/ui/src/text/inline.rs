@@ -30,6 +30,12 @@ pub(super) struct Inline {
     text: SharedString,
     links: Rc<Vec<(Range<usize>, LinkMark)>>,
     highlights: Vec<(Range<usize>, HighlightStyle)>,
+    /// Byte ranges rendered as inline-code chips. Collected in
+    /// `request_layout` from highlights carrying the code background, which
+    /// is stripped from the text runs there; `paint` draws a rounded,
+    /// vertically inset quad behind each range instead of the text system's
+    /// hard-edged full-line-height run background.
+    code_ranges: Vec<Range<usize>>,
     styled_text: StyledText,
     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
 
@@ -69,6 +75,7 @@ impl Inline {
             id: id.into(),
             links: Rc::new(links),
             highlights,
+            code_ranges: Vec::new(),
             text: text.clone(),
             styled_text: StyledText::new(text),
             link_click_handler,
@@ -254,6 +261,99 @@ impl Inline {
         line_bounds
     }
 
+    /// Tight per-wrapped-line bounds for a byte range, walking characters
+    /// the same way `text_line_bounds` does for the whole text.
+    fn range_line_bounds(
+        &self,
+        range: Range<usize>,
+        text_layout: &TextLayout,
+        line_height: Pixels,
+        mask_bounds: Bounds<Pixels>,
+    ) -> Vec<Bounds<Pixels>> {
+        let mut line_bounds = Vec::new();
+        let mut current_line_y = None;
+        let mut current_bounds: Option<Bounds<Pixels>> = None;
+        let Some(slice) = self.text.get(range.clone()) else {
+            return line_bounds;
+        };
+
+        let mut offset = range.start;
+        for c in slice.chars() {
+            let next_offset = offset + c.len_utf8();
+            let Some(pos) = text_layout.position_for_index(offset) else {
+                offset = next_offset;
+                continue;
+            };
+
+            let mut char_width = line_height.half();
+            if let Some(next_pos) = text_layout.position_for_index(next_offset) {
+                if next_pos.y == pos.y {
+                    char_width = next_pos.x - pos.x;
+                }
+            }
+
+            let bounds = Bounds::from_corners(pos, point(pos.x + char_width, pos.y + line_height))
+                .intersect(&mask_bounds);
+            if bounds.size.width > px(0.) && bounds.size.height > px(0.) {
+                if current_line_y == Some(pos.y) {
+                    if let Some(current) = current_bounds.as_mut() {
+                        *current = current.union(&bounds);
+                    }
+                } else {
+                    if let Some(current) = current_bounds.take() {
+                        line_bounds.push(current);
+                    }
+                    current_line_y = Some(pos.y);
+                    current_bounds = Some(bounds);
+                }
+            }
+
+            offset = next_offset;
+        }
+
+        if let Some(current) = current_bounds {
+            line_bounds.push(current);
+        }
+
+        line_bounds
+    }
+
+    /// Paint the inline-code chips: one rounded quad per wrapped-line
+    /// segment, inset from the line box so neighboring lines' chips never
+    /// touch, padded a hair sideways so glyphs don't kiss the corner radius.
+    fn paint_code_chips(&self, text_layout: &TextLayout, window: &mut Window, cx: &mut App) {
+        if self.code_ranges.is_empty() {
+            return;
+        }
+        let line_height = text_layout.line_height();
+        let background = cx.theme().accent;
+        // At most a fifth of the line box per edge: enough that 1.5–1.7
+        // leading reads as a chip, harmless at tight line heights.
+        let inset = (line_height * 0.2).min(px(3.));
+        let pad = px(2.);
+        let mask_bounds = window.content_mask().bounds;
+        for range in &self.code_ranges {
+            for line in self.range_line_bounds(range.clone(), text_layout, line_height, mask_bounds)
+            {
+                let chip = Bounds {
+                    origin: point(line.origin.x - pad, line.origin.y + inset),
+                    size: gpui::size(
+                        line.size.width + pad + pad,
+                        (line.size.height - inset - inset).max(px(0.)),
+                    ),
+                };
+                window.paint_quad(quad(
+                    chip,
+                    px(4.),
+                    background,
+                    Edges::default(),
+                    gpui::transparent_black(),
+                    BorderStyle::default(),
+                ));
+            }
+        }
+    }
+
     /// Paint the selection background.
     fn paint_selection(
         selection: &Selection,
@@ -358,15 +458,33 @@ impl Element for Inline {
     ) -> (LayoutId, Self::RequestLayoutState) {
         let text_style = window.text_style();
 
+        // Inline code is tagged by the code background color (the theme
+        // accent; explicit `<mark>` colors pass through untouched). The flat
+        // run background would paint as a hard-cornered slab spanning the
+        // full line height, welding onto the slabs of neighboring lines —
+        // strip it from the run and chip-paint the range in `paint` instead.
+        let code_background = cx.theme().accent;
+        let mut code_ranges: Vec<Range<usize>> = Vec::new();
         let mut runs = Vec::new();
         let mut ix = 0;
         for (range, highlight) in self.highlights.iter() {
+            let mut highlight = *highlight;
+            if highlight.background_color == Some(code_background) {
+                highlight.background_color = None;
+                // combine_highlights splits a code span where other marks
+                // overlap it; contiguous pieces are one chip.
+                match code_ranges.last_mut() {
+                    Some(last) if last.end == range.start => last.end = range.end,
+                    _ => code_ranges.push(range.clone()),
+                }
+            }
             if ix < range.start {
                 runs.push(text_style.clone().to_run(range.start - ix));
             }
-            runs.push(text_style.clone().highlight(*highlight).to_run(range.len()));
+            runs.push(text_style.clone().highlight(highlight).to_run(range.len()));
             ix = range.end;
         }
+        self.code_ranges = code_ranges;
         if ix < self.text.len() {
             runs.push(text_style.to_run(self.text.len() - ix));
         }
@@ -412,6 +530,7 @@ impl Element for Inline {
         };
 
         let text_layout = self.styled_text.layout().clone();
+        self.paint_code_chips(&text_layout, window, cx);
         self.styled_text
             .paint(global_id, None, bounds, &mut (), &mut (), window, cx);
 
