@@ -60,7 +60,7 @@ impl RevealState {
             .retain(|(_, at)| now.duration_since(*at) < REVEAL_FADE);
         if !self.extended_this_pass {
             if let Some(last) = self.last_seen.take() {
-                if self.tail.as_ref() != Some(&last) {
+                if self.tail.as_ref() != Some(&last) && !last.trim().is_empty() {
                     // The tail moved to a new inline; its first chunk shows
                     // plain and everything appended after fades.
                     self.tail = Some(last);
@@ -75,10 +75,19 @@ impl RevealState {
     /// An inline reporting its rendered text. Returns the fade fronts to
     /// apply to that inline's runs — empty for everyone but the tail.
     pub(crate) fn observe(&mut self, text: &str) -> Vec<(usize, f32)> {
+        // Empty or whitespace-only inlines are transient parse artifacts
+        // (a paragraph boundary landing mid-stream). Electing one as the
+        // tail would make the next real paragraph read as one giant
+        // "extension" — everything starts with "" — and fade the whole
+        // paragraph out from its first byte, over and over, until the
+        // stream closed. They are not tails and not candidates.
+        if text.trim().is_empty() {
+            return Vec::new();
+        }
         self.last_seen = Some(text.to_string());
         match &self.tail {
             Some(tail) if text == tail.as_str() => self.alphas(),
-            Some(tail) if text.starts_with(tail.as_str()) => {
+            Some(tail) if !tail.trim().is_empty() && text.starts_with(tail.as_str()) => {
                 let boundary = tail.len();
                 self.marks.push((boundary, Instant::now()));
                 self.tail = Some(text.to_string());
@@ -162,6 +171,44 @@ pub(crate) fn apply_reveal(runs: Vec<TextRun>, alphas: &[(usize, f32)]) -> Vec<T
 mod tests {
     use super::*;
     use gpui::{Hsla, TextRun};
+
+    /// The field bug: a transient empty node rendered after the real tail
+    /// must never become the tail — that faded the first paragraph out
+    /// from byte 0 for the rest of the stream.
+    #[test]
+    fn empty_inlines_never_take_the_tail() {
+        let mut reveal = RevealState::new(EntityId::from(u64::MAX));
+        reveal.begin_pass();
+        assert!(reveal.observe("The plugin is").is_empty());
+        reveal.begin_pass(); // adopts "The plugin is"
+        // A paragraph boundary lands: the tail paragraph renders, then an
+        // empty node renders after it. Nothing extended this pass.
+        assert!(reveal.observe("The plugin is").is_empty());
+        assert!(reveal.observe("").is_empty());
+        assert!(reveal.observe("   ").is_empty());
+        reveal.begin_pass();
+        // The first paragraph must still be the tail: growing it fades
+        // only the appended words, not the whole text from offset 0.
+        let alphas = reveal.observe("The plugin is great");
+        assert_eq!(alphas.len(), 1);
+        assert_eq!(alphas[0].0, "The plugin is".len());
+    }
+
+    #[test]
+    fn a_new_paragraph_adopts_without_fading_its_first_chunk() {
+        let mut reveal = RevealState::new(EntityId::from(u64::MAX));
+        reveal.begin_pass();
+        assert!(reveal.observe("First paragraph.").is_empty());
+        reveal.begin_pass(); // adopts
+        // Next chunk opens a second paragraph.
+        assert!(reveal.observe("First paragraph.").is_empty());
+        assert!(reveal.observe("Second").is_empty());
+        reveal.begin_pass(); // adopts "Second"
+        assert!(reveal.observe("First paragraph.").is_empty());
+        let alphas = reveal.observe("Second paragraph grows");
+        assert_eq!(alphas.len(), 1);
+        assert_eq!(alphas[0].0, "Second".len());
+    }
 
     fn run(len: usize, alpha: f32) -> TextRun {
         TextRun {
