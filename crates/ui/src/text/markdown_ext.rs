@@ -8,7 +8,7 @@ use std::{
     },
 };
 
-use gpui::{AnyElement, App, IntoElement, SharedString, Window};
+use gpui::{AnyElement, App, IntoElement, SharedString, SharedUri, Window};
 use markdown::{ParseOptions, mdast};
 
 use crate::text::node::Span;
@@ -172,12 +172,17 @@ impl PartialEq for MarkdownNode {
     }
 }
 
+/// Resolves a link's `href` to a small inline icon (favicon) URI rendered
+/// before the link text, or `None` for no icon.
+pub type LinkIconResolver = Arc<dyn Fn(&str) -> Option<SharedUri> + Send + Sync>;
+
 /// Registry for custom Markdown parsing and rendering.
 #[derive(Clone, Default)]
 pub struct MarkdownExtensions {
     enable_mdx: bool,
     block_parsers: Vec<Arc<MarkdownBlockParserFn>>,
     block_renderers: HashMap<SharedString, Arc<MarkdownBlockRenderFn>>,
+    link_icon: Option<LinkIconResolver>,
     revision: u64,
 }
 
@@ -212,6 +217,23 @@ impl MarkdownExtensions {
     {
         self.push_block_renderer(name, renderer);
         self
+    }
+
+    /// Render a small icon before each link, resolved from the link's
+    /// `href` (e.g. the site's favicon). Returning `None` leaves that link
+    /// icon-less. The icon becomes an inline image node, so it wraps,
+    /// centers on the text line, and opens the link like the text does.
+    pub fn link_icon<F>(mut self, resolver: F) -> Self
+    where
+        F: Fn(&str) -> Option<SharedUri> + Send + Sync + 'static,
+    {
+        self.link_icon = Some(Arc::new(resolver));
+        self.bump_revision();
+        self
+    }
+
+    pub(crate) fn link_icon_for(&self, url: &str) -> Option<SharedUri> {
+        self.link_icon.as_ref().and_then(|resolver| resolver(url))
     }
 
     /// Apply a reusable Markdown plugin.
