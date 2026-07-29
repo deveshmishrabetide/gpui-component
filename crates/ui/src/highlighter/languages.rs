@@ -513,7 +513,12 @@ impl Language {
                 "",
             ),
             #[cfg(feature = "tree-sitter-csharp")]
-            Self::CSharp => (tree_sitter_c_sharp::LANGUAGE, "", "", ""),
+            Self::CSharp => (
+                tree_sitter_c_sharp::LANGUAGE,
+                tree_sitter_c_sharp::HIGHLIGHTS_QUERY,
+                "",
+                "",
+            ),
             #[cfg(feature = "tree-sitter-graphql")]
             Self::GraphQL => (tree_sitter_graphql::LANGUAGE, "", "", ""),
             #[cfg(feature = "tree-sitter-proto")]
@@ -526,7 +531,12 @@ impl Language {
                 "",
             ),
             #[cfg(feature = "tree-sitter-cmake")]
-            Self::CMake => (tree_sitter_cmake::LANGUAGE, "", "", ""),
+            Self::CMake => (
+                tree_sitter_cmake::LANGUAGE,
+                tree_sitter_cmake::HIGHLIGHTS_QUERY,
+                tree_sitter_cmake::INJECTIONS_QUERY,
+                "",
+            ),
             #[cfg(feature = "tree-sitter-typescript")]
             Self::TypeScript => (
                 tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
@@ -622,6 +632,39 @@ impl Language {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A query that fails to compile degrades to monochrome silently
+    /// (the highlighter logs and bails) — catch it at test time instead.
+    #[test]
+    fn enabled_highlight_queries_compile() {
+        for language in Language::all() {
+            let config = language.config();
+            let Some(grammar) = config.language.as_ref() else {
+                continue;
+            };
+            if config.highlights.is_empty() {
+                continue;
+            }
+            if let Err(error) = tree_sitter::Query::new(grammar, &config.highlights) {
+                panic!("{} highlight query does not compile: {error:?}", config.name);
+            }
+        }
+    }
+
+    /// These two shipped with empty query strings even though their
+    /// grammar crates export one — the regression this guards against
+    /// renders every Unreal Build.cs/Target.cs monochrome.
+    #[cfg(feature = "tree-sitter-csharp")]
+    #[test]
+    fn csharp_ships_a_highlight_query() {
+        assert!(!Language::CSharp.config().highlights.is_empty());
+    }
+
+    #[cfg(feature = "tree-sitter-cmake")]
+    #[test]
+    fn cmake_ships_a_highlight_query() {
+        assert!(!Language::CMake.config().highlights.is_empty());
+    }
 
     #[test]
     fn test_language_name() {
