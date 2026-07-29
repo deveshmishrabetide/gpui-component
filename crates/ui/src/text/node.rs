@@ -1253,6 +1253,7 @@ impl CodeBlock {
                         vec![],
                         self.styles(&cx.theme().highlight_theme),
                         node_cx.link_click_handler.clone(),
+                        None,
                     ))
                     .when_some(node_cx.code_block_actions.clone(), |this, actions| {
                         this.child(
@@ -1282,6 +1283,8 @@ pub(crate) struct NodeContext {
     pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
     pub(crate) link_click_handler: Option<Arc<LinkClickHandlerFn>>,
     pub(crate) markdown_extensions: Arc<MarkdownExtensions>,
+    /// Streaming word-fade state, when the owning view streams.
+    pub(crate) reveal: Option<Arc<std::sync::Mutex<crate::text::reveal::RevealState>>>,
 }
 
 impl NodeContext {
@@ -1336,6 +1339,7 @@ impl Paragraph {
                             links.clone(),
                             highlights.clone(),
                             node_cx.link_click_handler.clone(),
+                            node_cx.reveal.clone(),
                         )
                         .into_any_element(),
                     );
@@ -1455,6 +1459,7 @@ impl Paragraph {
                     links,
                     highlights,
                     node_cx.link_click_handler.clone(),
+                    node_cx.reveal.clone(),
                 )
                 .into_any_element(),
             );

@@ -1,3 +1,4 @@
+mod reveal;
 mod document;
 mod format;
 mod inline;

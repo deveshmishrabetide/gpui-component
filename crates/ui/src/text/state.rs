@@ -87,6 +87,9 @@ pub struct TextViewState {
     pub(super) auto_scroll: AutoScroll,
 
     pub(super) parsed_content: ParsedContent,
+    /// Streaming word-fade state (see [`crate::text::reveal`]); `None`
+    /// renders text plainly.
+    reveal: Option<Arc<std::sync::Mutex<crate::text::reveal::RevealState>>>,
     /// Content format (markdown / html), used to parse synchronously on the
     /// main thread for full-replace updates.
     format: TextViewFormat,
@@ -171,6 +174,7 @@ impl TextViewState {
             parsed_content: Default::default(),
             format,
             parsed_error: None,
+            reveal: None,
             text: text.to_string(),
             revision: 0,
             tx,
@@ -239,6 +243,16 @@ impl TextViewState {
         self.text.push_str(text);
         self.parsed_error = None;
         self.increment_update(text, false, cx);
+    }
+
+    /// Fade newly appended text in word-by-word as it streams (see
+    /// [`crate::text::reveal`]). Off by default.
+    pub fn enable_streaming_reveal(&mut self) {
+        if self.reveal.is_none() {
+            self.reveal = Some(Arc::new(std::sync::Mutex::new(
+                crate::text::reveal::RevealState::new(self.entity_id),
+            )));
+        }
     }
 
     /// Append partial text content to the existing text.
@@ -546,6 +560,12 @@ impl Render for TextViewState {
         node_cx.link_click_handler = self.link_click_handler.clone();
         node_cx.markdown_extensions = self.markdown_extensions.clone();
         node_cx.style = self.text_view_style.clone();
+        if let Some(reveal) = &self.reveal {
+            if let Ok(mut reveal) = reveal.lock() {
+                reveal.begin_pass();
+            }
+            node_cx.reveal = Some(reveal.clone());
+        }
 
         v_flex()
             .size_full()
