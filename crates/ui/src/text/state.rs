@@ -363,6 +363,16 @@ impl TextViewState {
                 }
             }
             cx.notify();
+            // The background future keeps its own running document as the
+            // baseline for append parses. A full replace that never
+            // reaches it leaves that baseline stale — the first append
+            // then rebuilds the document from the chunk alone and every
+            // block from before the replace vanishes from the screen
+            // (a streaming view's seeded text disappeared exactly this
+            // way, returning only on the final full re-parse). Forward
+            // the replace so the future rebases; UpdateOptions::merge
+            // folds any queued appends into it correctly.
+            _ = self.tx.try_send(update_options);
             return;
         }
 
@@ -744,6 +754,32 @@ mod tests {
     use super::*;
     use crate::text::MarkdownNode;
     use gpui::TestAppContext;
+
+    #[gpui::test]
+    fn push_str_after_a_nonempty_seed_keeps_the_seeded_document(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        // A streaming view starts seeded with everything that arrived
+        // before it existed, then grows by appends.
+        let state = cx.update(|cx| {
+            cx.new(|cx| TextViewState::markdown("Seed paragraph.\n\nSecond", cx))
+        });
+        cx.run_until_parked();
+
+        state.update(cx, |state, cx| {
+            state.push_str(" grows", cx);
+        });
+        cx.run_until_parked();
+
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.source().as_str(), "Seed paragraph.\n\nSecond grows");
+            let text = state.parsed_content.document.text();
+            assert!(
+                text.contains("Seed paragraph."),
+                "the seeded blocks vanished from the rendered document: {text:?}"
+            );
+            assert!(text.contains("Second grows"), "append lost: {text:?}");
+        });
+    }
 
     #[gpui::test]
     fn set_text_then_push_str_appends_to_replaced_content(cx: &mut TestAppContext) {
