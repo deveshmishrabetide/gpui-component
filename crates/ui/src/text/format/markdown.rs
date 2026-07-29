@@ -226,8 +226,11 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &mdast::Node, cx: &mut NodeC
                 paragraph.push_image(ImageNode {
                     url: icon,
                     link: link_mark.clone(),
+                    // 12px glyph + 5px trailing gap: subtle next to 14px
+                    // prose, the way t3/Perplexity set link favicons.
                     width: Some(gpui::px(17.).into()),
-                    height: Some(gpui::px(13.).into()),
+                    height: Some(gpui::px(12.).into()),
+                    icon: true,
                     ..Default::default()
                 });
             }
