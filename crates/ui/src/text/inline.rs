@@ -263,11 +263,18 @@ impl Inline {
 
     /// Tight per-wrapped-line bounds for a byte range, walking characters
     /// the same way `text_line_bounds` does for the whole text.
+    ///
+    /// `element_left` is where wrapped continuation lines start. It matters
+    /// because `position_for_index` maps an index sitting exactly on a wrap
+    /// boundary to the END of the previous visual line, while its glyph
+    /// renders at the START of the next one — taking the reported position
+    /// literally painted a phantom stub at the previous line's edge.
     fn range_line_bounds(
         &self,
         range: Range<usize>,
         text_layout: &TextLayout,
         line_height: Pixels,
+        element_left: Pixels,
         mask_bounds: Bounds<Pixels>,
     ) -> Vec<Bounds<Pixels>> {
         let mut line_bounds = Vec::new();
@@ -285,14 +292,25 @@ impl Inline {
                 continue;
             };
 
+            let mut char_bounds = None;
             let mut char_width = line_height.half();
             if let Some(next_pos) = text_layout.position_for_index(next_offset) {
                 if next_pos.y == pos.y {
                     char_width = next_pos.x - pos.x;
+                } else if next_pos.y > pos.y {
+                    // This char IS the wrap boundary (see doc comment):
+                    // anchor it to the continuation line it renders on.
+                    char_bounds = Some(Bounds::from_corners(
+                        point(element_left, next_pos.y),
+                        point(next_pos.x, next_pos.y + line_height),
+                    ));
                 }
             }
 
-            let bounds = Bounds::from_corners(pos, point(pos.x + char_width, pos.y + line_height))
+            let bounds = char_bounds
+                .unwrap_or_else(|| {
+                    Bounds::from_corners(pos, point(pos.x + char_width, pos.y + line_height))
+                })
                 .intersect(&mask_bounds);
             if bounds.size.width > px(0.) && bounds.size.height > px(0.) {
                 if current_line_y == Some(pos.y) {
@@ -321,7 +339,13 @@ impl Inline {
     /// Paint the inline-code chips: one rounded quad per wrapped-line
     /// segment, inset from the line box so neighboring lines' chips never
     /// touch, padded a hair sideways so glyphs don't kiss the corner radius.
-    fn paint_code_chips(&self, text_layout: &TextLayout, window: &mut Window, cx: &mut App) {
+    fn paint_code_chips(
+        &self,
+        text_layout: &TextLayout,
+        element_bounds: &Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         if self.code_ranges.is_empty() {
             return;
         }
@@ -333,8 +357,13 @@ impl Inline {
         let pad = px(2.);
         let mask_bounds = window.content_mask().bounds;
         for range in &self.code_ranges {
-            for line in self.range_line_bounds(range.clone(), text_layout, line_height, mask_bounds)
-            {
+            for line in self.range_line_bounds(
+                range.clone(),
+                text_layout,
+                line_height,
+                element_bounds.left(),
+                mask_bounds,
+            ) {
                 let chip = Bounds {
                     origin: point(line.origin.x - pad, line.origin.y + inset),
                     size: gpui::size(
@@ -530,7 +559,7 @@ impl Element for Inline {
         };
 
         let text_layout = self.styled_text.layout().clone();
-        self.paint_code_chips(&text_layout, window, cx);
+        self.paint_code_chips(&text_layout, &bounds, window, cx);
         self.styled_text
             .paint(global_id, None, bounds, &mut (), &mut (), window, cx);
 
