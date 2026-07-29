@@ -389,6 +389,7 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &Rc<Node>) {
                     width,
                     height,
                     title: title.map(Into::into),
+                    icon: false,
                 });
             }
             _ => {
@@ -485,6 +486,7 @@ fn parse_node(
                     alt: alt.map(Into::into),
                     width,
                     height,
+                    icon: false,
                 });
 
                 if children.len() > 0 {

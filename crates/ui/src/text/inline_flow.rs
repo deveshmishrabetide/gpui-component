@@ -8,7 +8,7 @@ use gpui::{
     GlobalElementId, HighlightStyle, InspectorElementId, InteractiveElement as _, IntoElement,
     LayoutId, LineFragment as WrapLineFragment, ObjectFit, Pixels, ShapedLine, SharedString,
     SharedUri, Size, StatefulInteractiveElement as _, Styled, StyledImage as _, TextRun, TextStyle,
-    WhiteSpace, Window, img, point, prelude::FluentBuilder as _, px, relative, size,
+    WhiteSpace, Window, div, img, point, prelude::FluentBuilder as _, px, relative, size,
 };
 
 use crate::{
@@ -16,6 +16,7 @@ use crate::{
     text::text_view::{LinkClickHandlerFn, handle_link_click},
     tooltip::Tooltip,
 };
+use gpui::ParentElement as _;
 
 use super::{
     inline::{Inline, InlineState},
@@ -43,6 +44,8 @@ pub(super) enum InlineFlowItem {
         title: String,
         width: Option<DefiniteLength>,
         height: Option<DefiniteLength>,
+        /// See [`crate::text::node::ImageNode::icon`].
+        icon: bool,
     },
 }
 
@@ -124,7 +127,46 @@ impl InlineFlow {
         title: &str,
         size: Size<Pixels>,
         link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+        icon: bool,
     ) -> AnyElement {
+        // An icon hugs the text that follows its box: the glyph sits at the
+        // left edge, rounded (favicons ship opaque square tiles), and the
+        // box's extra width reads as the gap to the link text.
+        if icon {
+            let glyph = size.height;
+            return div()
+                .id(ix)
+                .w(size.width)
+                .h(size.height)
+                .flex()
+                .items_center()
+                .justify_start()
+                .when_some(link.clone(), |this, link| {
+                    let title = title.to_string();
+                    let icon_link_click_handler = link_click_handler.clone();
+                    this.cursor_pointer()
+                        .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
+                        .on_click(move |event, window, cx| {
+                            window.end_text_selection(cx);
+                            cx.stop_propagation();
+                            handle_link_click(
+                                &icon_link_click_handler,
+                                link.url.clone(),
+                                event.clone(),
+                                window,
+                                cx,
+                            );
+                        })
+                })
+                .child(
+                    img(url.clone())
+                        .object_fit(ObjectFit::Contain)
+                        .w(glyph)
+                        .h(glyph)
+                        .rounded(px(3.)),
+                )
+                .into_any_element();
+        }
         img(url.clone())
             .id(ix)
             .object_fit(ObjectFit::Contain)
@@ -309,7 +351,11 @@ impl Element for InlineFlow {
                     size: fragment_size,
                 } => {
                     let InlineFlowItem::Image {
-                        url, link, title, ..
+                        url,
+                        link,
+                        title,
+                        icon,
+                        ..
                     } = &self.items[item_ix]
                     else {
                         continue;
@@ -321,6 +367,7 @@ impl Element for InlineFlow {
                         title.as_str(),
                         fragment_size,
                         self.link_click_handler.clone(),
+                        *icon,
                     );
                     element.prepaint_as_root(
                         bounds.origin + origin,

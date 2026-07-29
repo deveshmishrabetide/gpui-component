@@ -453,6 +453,10 @@ pub struct ImageNode {
     pub alt: Option<SharedString>,
     pub width: Option<DefiniteLength>,
     pub height: Option<DefiniteLength>,
+    /// A small inline icon (e.g. a link favicon): renders left-aligned and
+    /// rounded inside its box, so width beyond `height` becomes a trailing
+    /// gap instead of centering padding.
+    pub icon: bool,
 }
 
 impl ImageNode {
@@ -1498,6 +1502,7 @@ impl Paragraph {
                     title: image.title(),
                     width: image.width,
                     height: image.height,
+                    icon: image.icon,
                 });
 
                 text.clear();
