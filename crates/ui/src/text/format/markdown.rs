@@ -208,6 +208,21 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &mdast::Node, cx: &mut NodeC
                 ..Default::default()
             });
 
+            // The icon leads the link text as a true inline image: it lays
+            // out in the flow (wrapping with the text, centered on the
+            // line) and clicks through to the same URL. The box is a hair
+            // wider than the glyph so the icon keeps a natural gap from
+            // the text without polluting the copyable text with spacers.
+            if let Some(icon) = cx.markdown_extensions.link_icon_for(&val.url) {
+                paragraph.push_image(ImageNode {
+                    url: icon,
+                    link: link_mark.clone(),
+                    width: Some(gpui::px(17.).into()),
+                    height: Some(gpui::px(13.).into()),
+                    ..Default::default()
+                });
+            }
+
             text = merge_children_with_mark(
                 paragraph,
                 &val.children,
