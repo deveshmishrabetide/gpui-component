@@ -460,9 +460,6 @@ impl Render for TextViewState {
         node_cx.markdown_extensions = self.markdown_extensions.clone();
         node_cx.style = self.text_view_style.clone();
         if let Some(reveal) = &self.reveal {
-            if let Ok(mut reveal) = reveal.lock() {
-                reveal.begin_pass();
-            }
             node_cx.reveal = Some(reveal.clone());
         }
 
