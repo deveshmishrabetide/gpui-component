@@ -290,7 +290,8 @@ impl Element for InlineFlow {
                     }
 
                     let mut element =
-                        Inline::new(elements.len(), state, links, highlights).into_any_element();
+                        Inline::new(elements.len(), state, links, highlights, None)
+                            .into_any_element();
                     element.prepaint_as_root(
                         bounds.origin + origin,
                         size(

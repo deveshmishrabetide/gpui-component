@@ -31,6 +31,10 @@ pub(super) struct Inline {
     /// vertically inset quad behind each range instead of the text system's
     /// hard-edged full-line-height run background.
     code_ranges: Vec<Range<usize>>,
+    /// Streaming word-fade state shared by the owning view (see
+    /// [`crate::text::reveal`]). Present on every inline of a streaming
+    /// view; only the tail inline's runs actually fade.
+    reveal: Option<Arc<Mutex<crate::text::reveal::RevealState>>>,
     styled_text: StyledText,
 
     state: Arc<Mutex<InlineState>>,
@@ -58,6 +62,7 @@ impl Inline {
         state: Arc<Mutex<InlineState>>,
         links: Vec<(Range<usize>, LinkMark)>,
         highlights: Vec<(Range<usize>, HighlightStyle)>,
+        reveal: Option<Arc<Mutex<crate::text::reveal::RevealState>>>,
     ) -> Self {
         let text = state
             .lock()
@@ -69,6 +74,7 @@ impl Inline {
             links: Rc::new(links),
             highlights,
             code_ranges: Vec::new(),
+            reveal,
             text: text.clone(),
             styled_text: StyledText::new(text),
             state,
@@ -500,6 +506,18 @@ impl Element for Inline {
             runs.push(text_style.to_run(self.text.len() - ix));
         }
 
+        // Streaming word-fade: the tail inline's freshly appended suffix
+        // renders at eased-in opacity. Layout is unaffected — only run
+        // colors change, so selection and copy stay exact.
+        if let Some(reveal) = &self.reveal {
+            if let Ok(mut reveal) = reveal.lock() {
+                let alphas = reveal.observe(&self.text);
+                if !alphas.is_empty() {
+                    runs = crate::text::reveal::apply_reveal(runs, &alphas);
+                }
+            }
+        }
+
         self.styled_text = StyledText::new(self.text.clone()).with_runs(runs);
         let (layout_id, _) =
             self.styled_text
@@ -539,6 +557,17 @@ impl Element for Inline {
         let Ok(mut state) = self.state.lock() else {
             return;
         };
+
+        // Keep frames coming while a fade is mid-flight: the drip of new
+        // chunks stops before the last words finish easing in, and without
+        // this nudge the fade would freeze where the stream ended.
+        if let Some(reveal) = &self.reveal {
+            if let Ok(reveal) = reveal.lock() {
+                if reveal.animating() {
+                    cx.notify(reveal.entity_id());
+                }
+            }
+        }
 
         let text_layout = self.styled_text.layout().clone();
         self.paint_code_chips(&text_layout, &bounds, window, cx);

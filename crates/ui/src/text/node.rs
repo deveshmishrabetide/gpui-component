@@ -753,6 +753,7 @@ impl CodeBlock {
                         self.state.clone(),
                         vec![],
                         self.styles(),
+                        None,
                     ))
                     .when_some(node_cx.code_block_actions.clone(), |this, actions| {
                         this.child(
@@ -781,6 +782,8 @@ pub(crate) struct NodeContext {
     pub(crate) style: TextViewStyle,
     pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
     pub(crate) markdown_extensions: Arc<MarkdownExtensions>,
+    /// Streaming word-fade state, when the owning view streams.
+    pub(crate) reveal: Option<Arc<std::sync::Mutex<crate::text::reveal::RevealState>>>,
 }
 
 impl NodeContext {
@@ -833,6 +836,7 @@ impl Paragraph {
                             inline_node.state.clone(),
                             links.clone(),
                             highlights.clone(),
+                            node_cx.reveal.clone(),
                         )
                         .into_any_element(),
                     );
@@ -924,8 +928,16 @@ impl Paragraph {
             if let Ok(mut state) = self.state.lock() {
                 state.set_text(text.into());
             }
-            child_nodes
-                .push(Inline::new(ix, self.state.clone(), links, highlights).into_any_element());
+            child_nodes.push(
+                Inline::new(
+                    ix,
+                    self.state.clone(),
+                    links,
+                    highlights,
+                    node_cx.reveal.clone(),
+                )
+                .into_any_element(),
+            );
         }
 
         div()
