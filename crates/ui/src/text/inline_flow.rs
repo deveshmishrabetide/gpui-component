@@ -15,11 +15,17 @@ use crate::{WindowExt as _, tooltip::Tooltip};
 use gpui::ParentElement as _;
 
 use super::{
-    inline::{Inline, InlineState},
+    inline::{Inline, InlineState, point_in_text_selection},
     node::LinkMark,
+};
+use crate::{
+    ActiveTheme as _, global_state::GlobalState, input::Selection, text::InlineElementSpec,
 };
 
 const IMAGE_LEN: usize = 1;
+/// Like an image, an element occupies one placeholder position in the
+/// wrap layout.
+const ELEMENT_LEN: usize = 1;
 
 pub(super) struct InlineFlow {
     id: ElementId,
@@ -41,6 +47,13 @@ pub(super) enum InlineFlowItem {
         height: Option<DefiniteLength>,
         /// See [`crate::text::node::ImageNode::icon`].
         icon: bool,
+    },
+    /// An app-defined inline widget (UI roadmap: mention chips,
+    /// citations). Its `state` carries the spec's `copy_text` so
+    /// selection and copy include the widget's textual identity.
+    Element {
+        state: Arc<Mutex<InlineState>>,
+        spec: InlineElementSpec,
     },
 }
 
@@ -71,6 +84,11 @@ enum PositionedFragment {
         origin: gpui::Point<Pixels>,
         size: Size<Pixels>,
     },
+    Element {
+        item_ix: usize,
+        origin: gpui::Point<Pixels>,
+        size: Size<Pixels>,
+    },
 }
 
 enum MeasureItem {
@@ -84,6 +102,9 @@ enum MeasureItem {
         width: Option<DefiniteLength>,
         height: Option<DefiniteLength>,
     },
+    /// Measured in `request_layout` like image intrinsics; the size vec
+    /// carries the result into the wrap closure.
+    Element,
 }
 
 struct LineFragmentLayout {
@@ -100,6 +121,7 @@ enum LineFragmentKind {
         highlights: Vec<(Range<usize>, HighlightStyle)>,
     },
     Image,
+    Element,
 }
 
 impl InlineFlow {
@@ -177,9 +199,22 @@ impl IntoElement for InlineFlow {
     }
 }
 
+/// Paint-phase bookkeeping for one inline element fragment: where it
+/// landed, whose state carries its copy_text, and how long that text is.
+pub(super) struct ElementSelectionInfo {
+    bounds: Bounds<Pixels>,
+    state: Arc<Mutex<InlineState>>,
+    copy_len: usize,
+}
+
+pub(super) struct InlineFlowPrepaint {
+    children: Vec<AnyElement>,
+    element_infos: Vec<ElementSelectionInfo>,
+}
+
 impl Element for InlineFlow {
     type RequestLayoutState = InlineFlowLayoutState;
-    type PrepaintState = Vec<AnyElement>;
+    type PrepaintState = InlineFlowPrepaint;
 
     fn id(&self) -> Option<ElementId> {
         Some(self.id.clone())
@@ -213,6 +248,15 @@ impl Element for InlineFlow {
                     window,
                     cx,
                 )),
+                MeasureItem::Element => {
+                    let InlineFlowItem::Element { spec, .. } = &self.items[ix] else {
+                        return Some(size(Pixels::ZERO, line_height));
+                    };
+                    let mut element = (spec.build)(window, cx);
+                    let measured =
+                        element.layout_as_root(AvailableSpace::min_size(), window, cx);
+                    Some(size(measured.width, measured.height.max(px(1.))))
+                }
                 MeasureItem::Text { .. } => None,
             })
             .collect::<Vec<_>>();
@@ -264,6 +308,7 @@ impl Element for InlineFlow {
             .and_then(|layout| layout.as_ref().map(|layout| layout.fragments.clone()))
             .unwrap_or_default();
         let mut elements = Vec::with_capacity(fragments.len());
+        let mut element_infos = Vec::new();
 
         for fragment in fragments {
             match fragment {
@@ -303,6 +348,35 @@ impl Element for InlineFlow {
                     );
                     elements.push(element);
                 }
+                PositionedFragment::Element {
+                    item_ix,
+                    origin,
+                    size: fragment_size,
+                } => {
+                    let InlineFlowItem::Element { state, spec } = &self.items[item_ix] else {
+                        continue;
+                    };
+                    let mut element = (spec.build)(window, cx);
+                    let element_bounds = Bounds {
+                        origin: bounds.origin + origin,
+                        size: fragment_size,
+                    };
+                    element.prepaint_as_root(
+                        element_bounds.origin,
+                        size(
+                            AvailableSpace::Definite(fragment_size.width),
+                            AvailableSpace::Definite(fragment_size.height),
+                        ),
+                        window,
+                        cx,
+                    );
+                    element_infos.push(ElementSelectionInfo {
+                        bounds: element_bounds,
+                        state: state.clone(),
+                        copy_len: spec.copy_text.len(),
+                    });
+                    elements.push(element);
+                }
                 PositionedFragment::Image {
                     item_ix,
                     origin,
@@ -340,7 +414,10 @@ impl Element for InlineFlow {
             }
         }
 
-        elements
+        InlineFlowPrepaint {
+            children: elements,
+            element_infos,
+        }
     }
 
     fn paint(
@@ -353,9 +430,66 @@ impl Element for InlineFlow {
         window: &mut Window,
         cx: &mut App,
     ) {
-        for element in prepaint {
+        for element in &mut prepaint.children {
             element.paint(window, cx);
         }
+        for info in &prepaint.element_infos {
+            paint_element_selection(info, window, cx);
+        }
+    }
+}
+
+/// The selection contract for inline elements: an element counts as one
+/// atom. It is selected when the window selection band covers its box
+/// (the same geometry test each character uses) or on select-all; its
+/// state then carries `0..copy_text.len()` so the copy path includes the
+/// widget's textual identity, and a translucent wash over the box says so
+/// visually. Word/line multi-click selection skips elements for now.
+fn paint_element_selection(info: &ElementSelectionInfo, window: &mut Window, cx: &mut App) {
+    let selected = {
+        let Some(text_view_state) = GlobalState::global(cx).text_view_state() else {
+            return;
+        };
+        let text_view_state = text_view_state.read(cx);
+        if !text_view_state.is_selectable() {
+            return;
+        }
+        if text_view_state.is_all_selected() {
+            true
+        } else if text_view_state.multi_click_selection().is_some() {
+            false
+        } else if let Some((selection_start, selection_end)) =
+            text_view_state.selection_points(window, cx)
+        {
+            let mask_bounds = window.content_mask().bounds;
+            mask_bounds.contains(&info.bounds.center())
+                && point_in_text_selection(
+                    info.bounds.origin,
+                    info.bounds.size.width,
+                    selection_start,
+                    selection_end,
+                    info.bounds.size.height,
+                )
+        } else {
+            false
+        }
+    };
+
+    if let Ok(mut state) = info.state.lock() {
+        state.selection = selected.then(|| Selection::from(0..info.copy_len));
+    }
+
+    if selected {
+        let mut wash = cx.theme().selection;
+        wash.a *= 0.9;
+        window.paint_quad(gpui::quad(
+            info.bounds,
+            px(4.),
+            wash,
+            gpui::Edges::default(),
+            gpui::transparent_black(),
+            gpui::BorderStyle::default(),
+        ));
     }
 }
 
@@ -380,6 +514,7 @@ impl From<&InlineFlowItem> for MeasureItem {
                 width: *width,
                 height: *height,
             },
+            InlineFlowItem::Element { .. } => MeasureItem::Element,
         }
     }
 }
@@ -389,6 +524,7 @@ impl MeasureItem {
         match self {
             MeasureItem::Text { text, .. } => text.len(),
             MeasureItem::Image { .. } => IMAGE_LEN,
+            MeasureItem::Element => ELEMENT_LEN,
         }
     }
 }
@@ -476,6 +612,20 @@ fn layout_flow(
                         });
                     }
                 }
+                MeasureItem::Element => {
+                    if line_range.start <= item_start && item_end <= line_range.end {
+                        let size = image_sizes[item_ix]
+                            .expect("element size should be measured before layout");
+                        line_width += size.width;
+                        actual_line_height = actual_line_height.max(size.height);
+                        line_fragments.push(LineFragmentLayout {
+                            item_ix,
+                            kind: LineFragmentKind::Element,
+                            size,
+                            source_range: 0..ELEMENT_LEN,
+                        });
+                    }
+                }
             }
 
             item_start = item_end;
@@ -499,6 +649,11 @@ fn layout_flow(
                     highlights,
                 },
                 LineFragmentKind::Image => PositionedFragment::Image {
+                    item_ix: fragment.item_ix,
+                    origin,
+                    size: fragment.size,
+                },
+                LineFragmentKind::Element => PositionedFragment::Element {
                     item_ix: fragment.item_ix,
                     origin,
                     size: fragment.size,
@@ -541,6 +696,12 @@ fn line_ranges(
                     .expect("image size should be measured before wrapping")
                     .width,
                 IMAGE_LEN,
+            ),
+            MeasureItem::Element => WrapLineFragment::element(
+                image_sizes[ix]
+                    .expect("element size should be measured before wrapping")
+                    .width,
+                ELEMENT_LEN,
             ),
         })
         .collect::<Vec<_>>();
