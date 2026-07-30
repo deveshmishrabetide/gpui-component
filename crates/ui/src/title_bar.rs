@@ -267,8 +267,11 @@ impl RenderOnce for TitleBar {
                 .justify_between()
                 .h(TITLE_BAR_HEIGHT)
                 .pl(TITLE_BAR_LEFT_PADDING)
-                .border_b_1()
-                .border_color(cx.theme().title_bar_border)
+                // No bottom hairline: even painted transparent, the 1px
+                // border slot sits outside any overlay a consumer paints
+                // over the bar, so the bar's own background bleeds through
+                // as a wrong-shade line wherever the surface below differs
+                // (NeoStack's sidebar). Shades separate; lines don't.
                 .bg(cx.theme().tokens.title_bar)
                 .refine_style(&self.style)
                 .when(is_linux, |this| {
