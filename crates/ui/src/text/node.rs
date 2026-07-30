@@ -145,6 +145,32 @@ impl BlockNode {
         })
     }
 
+    /// Recursively applies inline-element matchers to every paragraph-like
+    /// text container. Code blocks are exempt: matched widgets inside
+    /// verbatim code would be a lie.
+    pub(crate) fn apply_inline_matchers(&mut self, matchers: &crate::text::InlineMatchers) {
+        match self {
+            BlockNode::Root { children, .. }
+            | BlockNode::Blockquote { children, .. }
+            | BlockNode::List { children, .. }
+            | BlockNode::ListItem { children, .. } => {
+                for child in children {
+                    child.apply_inline_matchers(matchers);
+                }
+            }
+            BlockNode::Paragraph(paragraph) => paragraph.apply_inline_matchers(matchers),
+            BlockNode::Heading { children, .. } => children.apply_inline_matchers(matchers),
+            BlockNode::Table(table) => {
+                for row in &mut table.children {
+                    for cell in &mut row.children {
+                        cell.children.apply_inline_matchers(matchers);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn text_by_kind(&self, kind: BlockTextKind) -> String {
         let mut text = String::new();
         match self {
@@ -481,9 +507,14 @@ impl PartialEq for ImageNode {
 
 #[derive(Default, Clone, Debug)]
 pub(crate) struct InlineNode {
-    /// The text content.
+    /// The text content. For an element node this is the spec's
+    /// `copy_text`, so `Paragraph::text()` and selection assembly include
+    /// the widget's textual identity without special cases.
     pub(crate) text: SharedString,
     pub(crate) image: Option<ImageNode>,
+    /// An app-defined inline widget (see [`super::InlineElementSpec`]).
+    /// Renders through the inline flow; never as visible text.
+    pub(crate) element: Option<crate::text::InlineElementSpec>,
     /// The text styles, each tuple contains the range of the text and the style.
     pub(crate) marks: Vec<(Range<usize>, TextMark)>,
 
@@ -492,7 +523,10 @@ pub(crate) struct InlineNode {
 
 impl PartialEq for InlineNode {
     fn eq(&self, other: &Self) -> bool {
-        self.text == other.text && self.image == other.image && self.marks == other.marks
+        self.text == other.text
+            && self.image == other.image
+            && self.element == other.element
+            && self.marks == other.marks
     }
 }
 
@@ -791,6 +825,7 @@ impl InlineNode {
         Self {
             text: text.into(),
             image: None,
+            element: None,
             marks: vec![],
             state: Arc::new(Mutex::new(InlineState::default())),
         }
@@ -799,6 +834,12 @@ impl InlineNode {
     pub(crate) fn image(image: ImageNode) -> Self {
         let mut this = Self::new("");
         this.image = Some(image);
+        this
+    }
+
+    pub(crate) fn element(spec: crate::text::InlineElementSpec) -> Self {
+        let mut this = Self::new(spec.copy_text.clone());
+        this.element = Some(spec);
         this
     }
 
@@ -953,6 +994,54 @@ impl Paragraph {
             state.selection = None;
         }
     }
+
+    /// Replaces matcher-recognized spans in this paragraph's text runs
+    /// with element nodes. Marks are sliced to the surviving text
+    /// segments; nodes already carrying an image or element are left
+    /// alone.
+    pub(crate) fn apply_inline_matchers(&mut self, matchers: &crate::text::InlineMatchers) {
+        if matchers.is_empty() {
+            return;
+        }
+        let mut children = Vec::with_capacity(self.children.len());
+        for node in self.children.drain(..) {
+            if node.image.is_some() || node.element.is_some() || node.text.is_empty() {
+                children.push(node);
+                continue;
+            }
+            let matches = matchers.matches(&node.text);
+            if matches.is_empty() {
+                children.push(node);
+                continue;
+            }
+            let mut cursor = 0;
+            for hit in matches {
+                if cursor < hit.range.start {
+                    children.push(sliced_text_node(&node, cursor..hit.range.start));
+                }
+                children.push(InlineNode::element(hit.spec));
+                cursor = hit.range.end;
+            }
+            if cursor < node.text.len() {
+                children.push(sliced_text_node(&node, cursor..node.text.len()));
+            }
+        }
+        self.children = children;
+    }
+}
+
+/// One segment of a text node, marks clipped and re-based to the segment.
+fn sliced_text_node(node: &InlineNode, range: Range<usize>) -> InlineNode {
+    let marks = node
+        .marks
+        .iter()
+        .filter_map(|(mark_range, mark)| {
+            let start = mark_range.start.max(range.start);
+            let end = mark_range.end.min(range.end);
+            (start < end).then(|| ((start - range.start)..(end - range.start), mark.clone()))
+        })
+        .collect();
+    InlineNode::new(node.text[range].to_string()).marks(marks)
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -1472,6 +1561,12 @@ impl Paragraph {
     }
 
     fn should_render_inline_flow(&self) -> bool {
+        let has_element = self.children.iter().any(|child| child.element.is_some());
+        if has_element {
+            // Elements only render inside the flow — without it their
+            // copy_text would paint as plain prose.
+            return true;
+        }
         let has_image = self.children.iter().any(|child| child.image.is_some());
         let has_text = self.children.iter().any(|child| !child.text.is_empty());
         has_image && has_text
@@ -1483,10 +1578,47 @@ impl Paragraph {
         let mut highlights: Vec<(Range<usize>, HighlightStyle)> = vec![];
         let mut links: Vec<(Range<usize>, LinkMark)> = vec![];
         let mut offset = 0;
+        // The state the accumulated text run flushes into at an element
+        // boundary: the run's last contributing node. The element's own
+        // state is reserved for its copy_text.
+        let mut run_state: Option<Arc<Mutex<InlineState>>> = None;
 
         for inline_node in &self.children {
+            if let Some(spec) = &inline_node.element {
+                // The element's copy_text must not join the visible run.
+                if !text.is_empty() {
+                    let state = run_state
+                        .take()
+                        .unwrap_or_else(|| Arc::new(Mutex::new(InlineState::default())));
+                    if let Ok(mut state) = state.lock() {
+                        state.set_text(text.clone().into());
+                    }
+                    items.push(InlineFlowItem::Text {
+                        state,
+                        text: text.clone().into(),
+                        links: links.clone(),
+                        highlights: highlights.clone(),
+                    });
+                }
+                if let Ok(mut state) = inline_node.state.lock() {
+                    state.set_text(spec.copy_text.clone());
+                }
+                items.push(InlineFlowItem::Element {
+                    state: inline_node.state.clone(),
+                    spec: spec.clone(),
+                });
+                text.clear();
+                links.clear();
+                highlights.clear();
+                offset = 0;
+                run_state = None;
+                continue;
+            }
             let text_len = inline_node.text.len();
             text.push_str(&inline_node.text);
+            if !inline_node.text.is_empty() && inline_node.image.is_none() {
+                run_state = Some(inline_node.state.clone());
+            }
 
             if let Some(image) = &inline_node.image {
                 if !text.is_empty() {
@@ -1514,6 +1646,7 @@ impl Paragraph {
                 links.clear();
                 highlights.clear();
                 offset = 0;
+                run_state = None;
             } else {
                 let mut node_highlights = vec![];
                 for (range, style) in &inline_node.marks {

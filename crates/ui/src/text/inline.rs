@@ -758,7 +758,7 @@ fn selection_for_multi_click(
 }
 
 /// Check if a `pos` is within a `bounds`, considering multi-line selections.
-fn point_in_text_selection(
+pub(super) fn point_in_text_selection(
     pos: Point<Pixels>,
     char_width: Pixels,
     selection_start: Point<Pixels>,

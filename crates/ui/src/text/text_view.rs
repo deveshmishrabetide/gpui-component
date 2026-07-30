@@ -72,6 +72,7 @@ pub struct TextView {
     code_block_actions: Option<Arc<CodeBlockActionsFn>>,
     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
     markdown_extensions: Arc<MarkdownExtensions>,
+    inline_matchers: Arc<crate::text::InlineMatchers>,
 }
 
 /// A plugin that can configure a [`TextView`].
@@ -113,6 +114,7 @@ impl TextView {
             code_block_actions: None,
             link_click_handler: None,
             markdown_extensions: Arc::default(),
+            inline_matchers: Arc::default(),
         }
     }
 
@@ -131,6 +133,7 @@ impl TextView {
             code_block_actions: None,
             link_click_handler: None,
             markdown_extensions: Arc::default(),
+            inline_matchers: Arc::default(),
         }
     }
 
@@ -149,6 +152,7 @@ impl TextView {
             code_block_actions: None,
             link_click_handler: None,
             markdown_extensions: Arc::default(),
+            inline_matchers: Arc::default(),
         }
     }
 
@@ -220,6 +224,14 @@ impl TextView {
     /// Replace the Markdown extension registry.
     pub fn markdown_extensions(mut self, extensions: MarkdownExtensions) -> Self {
         self.markdown_extensions = Arc::new(extensions);
+        self
+    }
+
+    /// Replace the inline-element matcher registry: app-defined widgets
+    /// (mention chips, citations) recognized inside parsed text and laid
+    /// out inline with it. See [`crate::text::InlineMatchers`].
+    pub fn inline_matchers(mut self, matchers: crate::text::InlineMatchers) -> Self {
+        self.inline_matchers = Arc::new(matchers);
         self
     }
 
@@ -331,6 +343,7 @@ impl Element for TextView {
         state.update(cx, |state, cx| {
             state.code_block_actions = self.code_block_actions.clone();
             state.link_click_handler = self.link_click_handler.clone();
+            state.set_inline_matchers(self.inline_matchers.clone(), cx);
             state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
             state.selectable = self.selectable;
             state.selection_format = self.selection_format;

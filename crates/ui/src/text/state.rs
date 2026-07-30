@@ -94,6 +94,7 @@ pub struct TextViewState {
     /// main thread for full-replace updates.
     format: TextViewFormat,
     text: String,
+    inline_matchers: Arc<crate::text::InlineMatchers>,
     revision: usize,
     parsed_error: Option<SharedString>,
     tx: Sender<UpdateOptions>,
@@ -172,6 +173,7 @@ impl TextViewState {
             is_selecting: false,
             auto_scroll: AutoScroll::default(),
             parsed_content: Default::default(),
+            inline_matchers: Arc::default(),
             format,
             parsed_error: None,
             reveal: None,
@@ -264,6 +266,22 @@ impl TextViewState {
         self.increment_update(new_text, true, cx);
     }
 
+    /// Replaces the inline-element matcher registry (see
+    /// [`crate::text::InlineMatchers`]). Applies to Markdown and HTML
+    /// alike, so a revision change re-parses either format.
+    pub(crate) fn set_inline_matchers(
+        &mut self,
+        inline_matchers: Arc<crate::text::InlineMatchers>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.inline_matchers.revision() == inline_matchers.revision() {
+            return;
+        }
+        self.inline_matchers = inline_matchers;
+        let text = self.text.clone();
+        self.increment_update(&text, false, cx);
+    }
+
     pub(crate) fn set_markdown_extensions(
         &mut self,
         markdown_extensions: Arc<MarkdownExtensions>,
@@ -338,6 +356,7 @@ impl TextViewState {
             append,
             pending_text: text.to_string(),
             markdown_extensions: self.markdown_extensions.clone(),
+            inline_matchers: self.inline_matchers.clone(),
         };
 
         // Full-replace updates (initial content / `set_text`) parse
@@ -676,6 +695,7 @@ struct UpdateOptions {
     pending_text: String,
     append: bool,
     markdown_extensions: Arc<MarkdownExtensions>,
+    inline_matchers: Arc<crate::text::InlineMatchers>,
 }
 
 impl UpdateOptions {
@@ -733,10 +753,16 @@ fn parse_content(
         source = options.pending_text.to_string();
     }
 
-    let new_document = match format {
+    let mut new_document = match format {
         TextViewFormat::Markdown => format::markdown::parse(&source, &mut node_cx),
         TextViewFormat::Html => format::html::parse(&source, &mut node_cx),
     }?;
+
+    if !options.inline_matchers.is_empty() {
+        for block in &mut new_document.blocks {
+            block.apply_inline_matchers(&options.inline_matchers);
+        }
+    }
 
     if options.append {
         content.document.source =
@@ -753,6 +779,65 @@ fn parse_content(
 mod tests {
     use super::*;
     use crate::text::MarkdownNode;
+
+    #[test]
+    fn inline_matchers_split_paragraphs_and_keep_marks() {
+        use crate::text::node::BlockNode;
+        use crate::text::{InlineElementMatch, InlineElementSpec, InlineMatchers};
+        use gpui::prelude::*;
+
+        let matchers = Arc::new(InlineMatchers::default().matcher(|text: &str| {
+            text.match_indices("@menu.ts")
+                .map(|(at, token)| InlineElementMatch {
+                    range: at..at + token.len(),
+                    spec: InlineElementSpec::new("@menu.ts", |_, _| {
+                        gpui::div().into_any_element()
+                    }),
+                })
+                .collect()
+        }));
+        let options = UpdateOptions {
+            revision: 1,
+            pending_text: "fix **the bug** in @menu.ts please".into(),
+            append: false,
+            highlight_theme: HighlightTheme::default_dark().clone(),
+            markdown_extensions: Arc::default(),
+            inline_matchers: matchers,
+        };
+        let content = parse_content(TextViewFormat::Markdown, ParsedContent::default(), &options)
+            .expect("parse");
+
+        let mut paragraphs = Vec::new();
+        fn collect<'a>(block: &'a BlockNode, out: &mut Vec<&'a crate::text::node::Paragraph>) {
+            match block {
+                BlockNode::Root { children, .. } => {
+                    children.iter().for_each(|child| collect(child, out))
+                }
+                BlockNode::Paragraph(paragraph) => out.push(paragraph),
+                _ => {}
+            }
+        }
+        for block in &content.document.blocks {
+            collect(block, &mut paragraphs);
+        }
+        assert_eq!(paragraphs.len(), 1);
+        let children = &paragraphs[0].children;
+        // text("fix "), text("the bug" bold), text(" in "), element, text(" please")
+        let element_ix = children
+            .iter()
+            .position(|child| child.element.is_some())
+            .expect("an element node");
+        assert_eq!(children[element_ix].text.as_ref(), "@menu.ts");
+        // The bold mark survived the split on some earlier node.
+        assert!(children[..element_ix]
+            .iter()
+            .any(|child| child.marks.iter().any(|(_, mark)| mark.bold)));
+        // The paragraph's full text still reads as the original sentence.
+        assert_eq!(
+            paragraphs[0].text().replace("@menu.ts", "@menu.ts"),
+            "fix the bug in @menu.ts please"
+        );
+    }
     use gpui::TestAppContext;
 
     #[gpui::test]
@@ -817,6 +902,7 @@ mod tests {
             pending_text: "old".to_string(),
             append: true,
             markdown_extensions: Arc::default(),
+            inline_matchers: Arc::default(),
         };
 
         options.merge(UpdateOptions {
@@ -824,12 +910,14 @@ mod tests {
             pending_text: "new".to_string(),
             append: false,
             markdown_extensions: Arc::default(),
+            inline_matchers: Arc::default(),
         });
         options.merge(UpdateOptions {
             revision: 3,
             pending_text: " text".to_string(),
             append: true,
             markdown_extensions: Arc::default(),
+            inline_matchers: Arc::default(),
         });
 
         assert_eq!(options.revision, 3);
@@ -849,6 +937,7 @@ mod tests {
                 pending_text: format!("{revision}\n"),
                 append: revision != 1,
                 markdown_extensions: Arc::default(),
+            inline_matchers: Arc::default(),
             })
             .unwrap();
         }

@@ -2,6 +2,7 @@ mod reveal;
 mod document;
 mod format;
 mod inline;
+mod inline_element;
 mod inline_flow;
 mod markdown_ext;
 mod node;
@@ -13,6 +14,7 @@ mod utils;
 mod window_selection;
 
 use gpui::{App, ElementId, IntoElement, RenderOnce, SharedString, Window};
+pub use inline_element::*;
 pub use markdown_ext::*;
 pub use state::*;
 pub use style::*;
