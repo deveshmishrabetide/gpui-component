@@ -219,9 +219,9 @@ impl From<FontWeightContent> for FontWeight {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, JsonSchema, Serialize, Deserialize)]
 pub struct ThemeStyle {
-    color: Option<Hsla>,
-    font_style: Option<FontStyle>,
-    font_weight: Option<FontWeightContent>,
+    pub color: Option<Hsla>,
+    pub font_style: Option<FontStyle>,
+    pub font_weight: Option<FontWeightContent>,
 }
 
 impl From<ThemeStyle> for HighlightStyle {
