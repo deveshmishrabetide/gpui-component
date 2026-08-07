@@ -300,9 +300,17 @@ impl Element for InlineFlow {
         let layout_state = InlineFlowLayoutState::default();
         let layout_ref = layout_state.layout.clone();
 
+        // Captured HERE, not in the measure closure: ancestor text styles
+        // (the app's prose font/size) are pushed during the element-tree
+        // walk and are gone by the time taffy runs its deferred measure.
+        // Reading `window.text_style()` inside the closure measured every
+        // fragment with the window-default style while `prepaint` shaped
+        // the real one — a fragment measured narrower than its painted
+        // text re-wraps internally and paints its tail one line down, on
+        // top of the flow's next line.
+        let text_style = window.text_style();
         let layout_id = window.request_measured_layout(Default::default(), {
             move |known_dimensions, available_space, window, _cx| {
-                let text_style = window.text_style();
                 let wrap_width = if text_style.white_space == WhiteSpace::Normal {
                     known_dimensions.width.or(match available_space.width {
                         AvailableSpace::Definite(width) => Some(width),
@@ -379,11 +387,18 @@ impl Element for InlineFlow {
                         self.link_click_handler.clone(),
                         None,
                     )
+                    .flow_fragment()
                     .into_any_element();
+                    // MaxContent width: the fragment IS one wrapped line —
+                    // the inner StyledText must never wrap it again. Under
+                    // a Definite width, any disagreement between this
+                    // paint's metrics and the measure's (a style the
+                    // deferred measure couldn't see, a shaper change)
+                    // wrapped the tail onto the flow's next line.
                     element.prepaint_as_root(
                         bounds.origin + origin,
                         size(
-                            AvailableSpace::Definite(fragment_size.width),
+                            AvailableSpace::MaxContent,
                             AvailableSpace::Definite(fragment_size.height),
                         ),
                         window,
@@ -580,8 +595,11 @@ fn layout_flow(
     wrap_width: Option<Pixels>,
     window: &mut Window,
 ) -> InlineFlowLayout {
-    let line_height = window.line_height();
     let rem_size = window.rem_size();
+    // From the captured style, not `window.line_height()`: this runs in
+    // the deferred measure, where the window's ambient style is the
+    // default, not the flow's ancestors'.
+    let line_height = text_style.line_height_in_pixels(rem_size);
     let total_len = items.iter().map(MeasureItem::len).sum::<usize>();
     if total_len == 0 {
         return InlineFlowLayout::default();

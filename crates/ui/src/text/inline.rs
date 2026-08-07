@@ -40,6 +40,11 @@ pub(super) struct Inline {
     /// [`crate::text::reveal`]). Present on every inline of a streaming
     /// view; only the tail inline's runs actually fade.
     reveal: Option<Arc<Mutex<crate::text::reveal::RevealState>>>,
+    /// True when this inline is one pre-wrapped line fragment of an
+    /// `InlineFlow`. Such a fragment must never wrap again internally —
+    /// a second wrap paints its tail one line down, on top of the flow's
+    /// next line (see `InlineFlow::prepaint`).
+    flow_fragment: bool,
     styled_text: StyledText,
     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
 
@@ -82,11 +87,19 @@ impl Inline {
             highlights,
             code_ranges: Vec::new(),
             reveal,
+            flow_fragment: false,
             text: text.clone(),
             styled_text: StyledText::new(text),
             link_click_handler,
             state,
         }
+    }
+
+    /// Marks this inline as one pre-wrapped line fragment of an
+    /// `InlineFlow` (see the field doc).
+    pub(super) fn flow_fragment(mut self) -> Self {
+        self.flow_fragment = true;
+        self
     }
 
     /// Get link at given mouse position.
@@ -555,6 +568,21 @@ impl Element for Inline {
     ) -> Self::PrepaintState {
         self.styled_text
             .prepaint(id, inspector_id, bounds, &mut (), window, cx);
+        if self.flow_fragment {
+            let rewraps = self
+                .styled_text
+                .layout()
+                .line_layouts()
+                .iter()
+                .map(|line| line.wrap_boundaries.len())
+                .sum::<usize>();
+            if rewraps > 0 {
+                eprintln!(
+                    "INLINE-FLOW-SPILL: fragment re-wrapped {} time(s) at width {:?}: {:?}",
+                    rewraps, bounds.size.width, self.text
+                );
+            }
+        }
 
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         hitbox
