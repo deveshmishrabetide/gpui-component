@@ -590,7 +590,12 @@ fn layout_flow(
                     highlights,
                 } => {
                     let local_start = line_range.start.max(item_start) - item_start;
-                    let local_end = line_range.end.min(item_end) - item_start;
+                    let mut local_end = line_range.end.min(item_end) - item_start;
+                    // The newline that forced this boundary is layout, not
+                    // content — keep it out of the shaped fragment.
+                    while local_end > local_start && text[local_start..local_end].ends_with('\n') {
+                        local_end -= 1;
+                    }
                     if local_start < local_end {
                         let subtext = SharedString::from(text[local_start..local_end].to_string());
                         let highlights =
@@ -727,10 +732,27 @@ fn line_ranges(
     let mut wrapper = window
         .text_system()
         .line_wrapper(text_style.font(), font_size);
-    let boundaries = wrapper
+    let mut boundaries = wrapper
         .wrap_line(&wrap_fragments, wrap_width)
         .map(|boundary| boundary.ix.min(total_len))
         .collect::<Vec<_>>();
+    // Hard line breaks: the wrapper skips '\n' entirely (no boundary, no
+    // width), so a paragraph holding explicit newlines — a `<br/>` from a
+    // chat prompt, a markdown hard break — would run on as one line here
+    // while the plain (non-flow) path honors them. Force a boundary after
+    // every newline; the slicing below keeps the '\n' byte out of the
+    // rendered fragment.
+    let mut offset = 0usize;
+    for item in items {
+        if let MeasureItem::Text { text, .. } = item {
+            for (at, _) in text.match_indices('\n') {
+                boundaries.push(offset + at + 1);
+            }
+        }
+        offset += item.len();
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
     let mut ranges = Vec::with_capacity(boundaries.len() + 1);
     let mut start = 0;
 
