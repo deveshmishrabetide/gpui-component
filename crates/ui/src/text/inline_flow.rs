@@ -634,7 +634,12 @@ fn layout_flow(
                     highlights,
                 } => {
                     let local_start = line_range.start.max(item_start) - item_start;
-                    let local_end = line_range.end.min(item_end) - item_start;
+                    let mut local_end = line_range.end.min(item_end) - item_start;
+                    // The newline that forced this boundary is layout, not
+                    // content — keep it out of the shaped fragment.
+                    while local_end > local_start && text[local_start..local_end].ends_with('\n') {
+                        local_end -= 1;
+                    }
                     if local_start < local_end {
                         let subtext = SharedString::from(text[local_start..local_end].to_string());
                         let highlights =

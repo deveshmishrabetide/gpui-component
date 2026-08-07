@@ -421,10 +421,18 @@ fn parse_node(
             ref attrs,
             ..
         } => match name.local {
-            local_name!("br") => Some(BlockNode::Break {
-                html: true,
-                span: None,
-            }),
+            // A line break INSIDE the paragraph flow, exactly as the
+            // markdown path represents hard breaks. Returning a
+            // `BlockNode::Break` here put the break in the parent's child
+            // list while the text on both sides of the `<br/>` kept
+            // accumulating into one paragraph — "one<br/>two" parsed as
+            // [Break, Paragraph("one" "two")] and painted as "onetwo" on a
+            // single line (Break renders as an empty div). Every newline a
+            // user typed into the chat composer died here.
+            local_name!("br") => {
+                paragraph.push(InlineNode::new("\n"));
+                None
+            }
             local_name!("h1")
             | local_name!("h2")
             | local_name!("h3")
@@ -802,6 +810,58 @@ mod tests {
                     ..Default::default()
                 })]
             }
+        );
+    }
+}
+
+#[cfg(test)]
+mod line_break_tests {
+    use crate::text::node::{BlockNode, NodeContext, Paragraph};
+
+    /// The document may nest the paragraph under `Root` wrappers (body,
+    /// document); the assertions care about the one paragraph inside.
+    fn paragraphs(node: &BlockNode, out: &mut Vec<Paragraph>) {
+        match node {
+            BlockNode::Root { children, .. } => {
+                for child in children {
+                    paragraphs(child, out);
+                }
+            }
+            BlockNode::Paragraph(paragraph) => out.push(paragraph.clone()),
+            _ => {}
+        }
+    }
+
+    fn only_paragraph(html: &str) -> Paragraph {
+        let mut cx = NodeContext::default();
+        let document = super::parse(html, &mut cx).unwrap();
+        let mut found = Vec::new();
+        for block in &document.blocks {
+            paragraphs(block, &mut found);
+        }
+        assert_eq!(found.len(), 1, "expected one paragraph in {document:?}");
+        found.remove(0)
+    }
+
+    /// The chat-composer regression: `<br/>` must be a line break INSIDE
+    /// its paragraph. It used to become a block hoisted in front of the
+    /// paragraph while the surrounding text merged — "one<br/>two"
+    /// rendered as "onetwo" on a single line.
+    #[test]
+    fn br_stays_inside_its_paragraph() {
+        assert_eq!(only_paragraph("one<br/>two").text(), "one\ntwo");
+    }
+
+    #[test]
+    fn double_br_keeps_the_blank_line() {
+        assert_eq!(only_paragraph("one<br/><br/>two").text(), "one\n\ntwo");
+    }
+
+    #[test]
+    fn nbsp_runs_survive_around_breaks() {
+        assert_eq!(
+            only_paragraph("a&nbsp;&nbsp;b<br/>&nbsp;&nbsp;c").text(),
+            "a\u{a0}\u{a0}b\n\u{a0}\u{a0}c"
         );
     }
 }
