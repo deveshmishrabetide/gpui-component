@@ -239,14 +239,17 @@ impl TabVariant {
                 ..Default::default()
             },
             TabVariant::Pill => TabStyle {
-                fg: cx.theme().primary_foreground,
-                bg: cx.theme().tokens.primary.into(),
+                // Themeable like every other variant: a pill strip on a dark
+                // product wants the theme's quiet active-tab treatment, not
+                // the primary CTA color stamped on navigation.
+                fg: cx.theme().tab_active_foreground,
+                bg: cx.theme().tokens.tab_active.into(),
                 ..Default::default()
             },
             TabVariant::Segmented => TabStyle {
                 fg: cx.theme().tab_active_foreground,
                 bg: cx.theme().transparent.into(),
-                inner_bg: cx.theme().tokens.background.into(),
+                inner_bg: cx.theme().tokens.tab_active.into(),
                 shadow: true,
                 ..Default::default()
             },

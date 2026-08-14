@@ -229,18 +229,22 @@ impl TabBar {
             .top_0()
             .bottom_0()
             .map(|el| match variant {
+                // The slide indicator IS the selected face while animating,
+                // so it must wear the same themeable token as the Tab's own
+                // selected style (tab_active) — not background/primary,
+                // which stamp default-theme colors over themed strips.
                 TabVariant::Segmented => el.flex().items_center().child(
                     div()
                         .w_full()
                         .h(inner_height)
-                        .bg(cx.theme().tokens.background)
+                        .bg(cx.theme().tokens.tab_active)
                         .rounded(inner_radius)
                         .shadow_sm(),
                 ),
                 TabVariant::Pill => el.flex().items_center().child(
                     div()
                         .size_full()
-                        .bg(cx.theme().tokens.primary)
+                        .bg(cx.theme().tokens.tab_active)
                         .rounded(px(99.)),
                 ),
                 TabVariant::Underline => el.child(
