@@ -77,7 +77,13 @@ impl TabVariant {
             _ => px(12.),
         };
 
-        if matches!(self, TabVariant::Underline) {
+        // Pill and Segmented pad the OUTER capsule instead (see
+        // `outer_paddings`): padding inside the label box separates the
+        // label from its own prefix icon, which reads as two controls.
+        if matches!(
+            self,
+            TabVariant::Underline | TabVariant::Pill | TabVariant::Segmented
+        ) {
             padding_x = px(0.);
         }
 
@@ -85,6 +91,20 @@ impl TabVariant {
             left: padding_x,
             right: padding_x,
             ..Default::default()
+        }
+    }
+
+    /// Horizontal padding carried by the capsule itself, so prefix, label,
+    /// and suffix sit as one tight unit inside it.
+    fn outer_padding_x(&self, size: Size) -> Pixels {
+        match self {
+            TabVariant::Pill | TabVariant::Segmented => match size {
+                Size::XSmall => px(6.),
+                Size::Small => px(8.),
+                Size::Large => px(12.),
+                _ => px(10.),
+            },
+            _ => px(0.),
         }
     }
 
@@ -645,6 +665,7 @@ impl RenderOnce for Tab {
         let inner_radius = self.variant.inner_radius(self.size, cx);
         let inner_paddings = self.variant.inner_paddings(self.size);
         let inner_margins = self.variant.inner_margins(self.size);
+        let outer_padding_x = self.variant.outer_padding_x(self.size);
         let inner_height = self.variant.inner_height(self.size);
         let height = self.variant.height(self.size);
         let aria_label = self.a11y_label();
@@ -701,8 +722,9 @@ impl RenderOnce for Tab {
         // Icon-only tabs are fixed-size and exempt from `max_width`.
         let max_width = self.max_width.filter(|_| self.icon.is_none());
 
+        // Content-sized, not flex_1: a stretching label box centers the text
+        // away from its own prefix icon whenever the row has slack.
         let inner_content = h_flex()
-            .flex_1()
             .h(inner_height)
             .line_height(relative(1.))
             .whitespace_nowrap()
@@ -793,6 +815,7 @@ impl RenderOnce for Tab {
             .items_center()
             .flex_shrink_0()
             .h(height)
+            .px(outer_padding_x)
             .overflow_hidden()
             .map(|this| match self.size {
                 Size::XSmall => this.text_xs(),
