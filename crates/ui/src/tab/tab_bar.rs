@@ -245,7 +245,9 @@ impl TabBar {
                     div()
                         .size_full()
                         .bg(cx.theme().tokens.tab_active)
-                        .rounded(px(99.)),
+                        // Match the Tab's own rounded-rect radius so the
+                        // sliding face and the resting face are one shape.
+                        .rounded(variant.radius(size, cx)),
                 ),
                 TabVariant::Underline => el.child(
                     div()
@@ -370,7 +372,9 @@ impl RenderOnce for TabBar {
             }
             TabVariant::Pill => {
                 let padding = Edges::all(px(0.));
-                (cx.theme().transparent.into(), padding, px(4.))
+                // Tabs carry their own capsule padding now; a container gap
+                // on top of two 8px insets spreads the strip too far apart.
+                (cx.theme().transparent.into(), padding, px(0.))
             }
             TabVariant::Segmented => {
                 let padding_x = match self.size {

@@ -166,7 +166,9 @@ impl TabVariant {
                 ..Default::default()
             },
             TabVariant::Pill => TabStyle {
-                fg: cx.theme().foreground,
+                // Resting tabs recede; only the active face carries full
+                // contrast (hover restores it early).
+                fg: cx.theme().tab_foreground,
                 bg: cx.theme().transparent.into(),
                 ..Default::default()
             },
@@ -366,9 +368,15 @@ impl TabVariant {
         }
     }
 
-    fn radius(&self, size: Size, cx: &App) -> Pixels {
+    pub(super) fn radius(&self, size: Size, cx: &App) -> Pixels {
         match self {
-            TabVariant::Outline | TabVariant::Pill => px(99.),
+            TabVariant::Outline => px(99.),
+            // A rounded rect, not a capsule: at 22-26px tall a full capsule
+            // reads as a lozenge and exaggerates the strip's visual weight.
+            TabVariant::Pill => match size {
+                Size::XSmall | Size::Small => cx.theme().radius,
+                _ => cx.theme().radius_lg,
+            },
             TabVariant::Segmented => match size {
                 Size::XSmall | Size::Small => cx.theme().radius,
                 Size::Large => cx.theme().radius_lg,
