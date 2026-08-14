@@ -800,7 +800,6 @@ mod tests {
             revision: 1,
             pending_text: "fix **the bug** in @menu.ts please".into(),
             append: false,
-            highlight_theme: HighlightTheme::default_dark().clone(),
             markdown_extensions: Arc::default(),
             inline_matchers: matchers,
         };

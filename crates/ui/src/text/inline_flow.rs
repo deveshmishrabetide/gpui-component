@@ -23,7 +23,7 @@ use super::{
     node::LinkMark,
 };
 use crate::{
-    ActiveTheme as _, global_state::GlobalState, input::Selection, text::InlineElementSpec,
+    ActiveTheme as _, global_state::UiGlobalState, input::Selection, text::InlineElementSpec,
 };
 
 const IMAGE_LEN: usize = 1;
@@ -506,7 +506,7 @@ impl Element for InlineFlow {
 /// visually. Word/line multi-click selection skips elements for now.
 fn paint_element_selection(info: &ElementSelectionInfo, window: &mut Window, cx: &mut App) {
     let selected = {
-        let Some(text_view_state) = GlobalState::global(cx).text_view_state() else {
+        let Some(text_view_state) = UiGlobalState::global(cx).text_view_state() else {
             return;
         };
         let text_view_state = text_view_state.read(cx);
